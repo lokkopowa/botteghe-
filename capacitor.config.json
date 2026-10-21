@@ -1,0 +1,9 @@
+{
+  "appId": "it.allertabotteghe.app",
+  "appName": "Allerta Botteghe",
+  "webDir": "dist",
+  "android": { "backgroundColor": "#0e4740" },
+  "plugins": {
+    "PushNotifications": { "presentationOptions": ["badge", "sound", "alert"] }
+  }
+}

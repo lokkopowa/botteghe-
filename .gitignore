@@ -1,0 +1,8 @@
+node_modules/
+dist/
+android/
+functions/node_modules/
+*.keystore
+google-services.json
+.firebase/
+*.log

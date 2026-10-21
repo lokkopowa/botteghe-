@@ -1,0 +1,100 @@
+rules_version = '2';
+// Regole di sicurezza di Allerta Botteghe.
+// Solo i negozi del gruppo leggono e scrivono; il Superadmin ha il permesso "admin" dato dal server.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() { return signedIn() && request.auth.token.admin == true; }
+    function memberDoc() { return /databases/$(database)/documents/members/$(request.auth.uid); }
+    function isMember() {
+      return signedIn() && exists(memberDoc()) && get(memberDoc()).data.suspended == false;
+    }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // Codice del gruppo: lo vedono i membri, lo cambia solo il Superadmin
+    match /config/{docId} {
+      allow read: if isMember() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Profili dei negozi (creati solo dal server con il codice del gruppo)
+    match /members/{uid} {
+      allow read: if request.auth.uid == uid || isMember() || isAdmin();
+      allow create: if false;
+      allow update: if isAdmin()
+        || (request.auth.uid == uid && isMember()
+            && changed().hasOnly(['name', 'type', 'color', 'open', 'close', 'bio', 'prefs'])
+            && request.resource.data.name is string
+            && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 40
+            && request.resource.data.bio.size() <= 160);
+      allow delete: if isAdmin();
+
+      // Token per le notifiche push: solo il telefono del negozio
+      match /private/{docId} {
+        allow read, write: if signedIn() && request.auth.uid == uid;
+      }
+    }
+
+    // Avvisi: episodi e metodi, mai dati personali
+    function validPost(d) {
+      return d.keys().hasOnly(['cat', 'title', 'text', 'amount', 'urgent', 'author', 'ts', 'meToo'])
+        && d.cat in ['banconote', 'pagamento', 'resto', 'furto', 'incaricati', 'credito', 'altro']
+        && d.title is string && d.title.size() > 0 && d.title.size() <= 80
+        && d.text is string && d.text.size() > 0 && d.text.size() <= 600
+        && d.amount is string && d.amount.size() <= 10
+        && d.urgent is bool
+        && d.author == request.auth.uid
+        && d.ts == request.time
+        && d.meToo == [];
+    }
+    match /posts/{postId} {
+      allow read: if isMember() || isAdmin();
+      allow create: if isMember() && validPost(request.resource.data);
+      // "È successo anche a me": ognuno può aggiungere o togliere solo sé stesso
+      allow update: if isAdmin()
+        || (isMember()
+            && resource.data.author != request.auth.uid
+            && changed().hasOnly(['meToo'])
+            && request.resource.data.meToo.toSet().difference(resource.data.meToo.toSet())
+                 .union(resource.data.meToo.toSet().difference(request.resource.data.meToo.toSet()))
+                 .hasOnly([request.auth.uid]));
+      allow delete: if isAdmin() || (isMember() && resource.data.author == request.auth.uid);
+    }
+
+    // Registro notifiche: lo scrive solo il server
+    match /events/{eventId} {
+      allow read: if isMember() || isAdmin();
+      allow write: if false;
+    }
+
+    // Messaggi privati tra due negozi
+    function inChat(chatId) {
+      return request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
+    }
+    match /chats/{chatId} {
+      allow read: if isMember() && request.auth.uid in resource.data.members;
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['members'])
+        && request.resource.data.members.size() == 2
+        && request.auth.uid in request.resource.data.members
+        && chatId == request.resource.data.members[0] + '_' + request.resource.data.members[1];
+      allow update: if isMember() && request.auth.uid in resource.data.members
+        && request.resource.data.members == resource.data.members
+        && changed().size() == 0;
+
+      match /messages/{msgId} {
+        allow read: if isMember() && inChat(chatId);
+        allow create: if isMember() && inChat(chatId)
+          && request.resource.data.keys().hasOnly(['from', 'text', 'ts'])
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 1000
+          && request.resource.data.ts == request.time;
+      }
+    }
+
+    // Contatori dei tentativi: solo server
+    match /attempts/{id} { allow read, write: if false; }
+  }
+}
